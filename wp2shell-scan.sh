@@ -25,7 +25,7 @@
 # License: MIT.  Use at your own risk; SNAPSHOT the site before --clean.
 # =============================================================================
 set -uo pipefail
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 MODE="scan"; FORMAT="text"; ASSUME_YES=0; ROTATE_SALTS=1
 SINCE="2026-07-16 00:00:00"
@@ -110,9 +110,17 @@ find_backdoor_admins(){ # $1=wproot  -> rows: ID<TAB>login<TAB>email<TAB>registe
     FROM \`${pfx}users\` u JOIN \`${pfx}usermeta\` m ON u.ID=m.user_id
     WHERE m.meta_key='${pfx}capabilities' AND m.meta_value LIKE '%administrator%'
       AND ( u.user_login LIKE 'wpsvc\\_%'
-         OR u.user_email LIKE '%@wordpress-svc.internal'
-         OR u.user_email LIKE '%@wordpress-noreply.net'
-         OR u.user_email LIKE '%@%.internal' );"
+         OR u.user_login LIKE 'wp2\\_%'
+         OR u.user_login LIKE 'w2s\\_%'
+         OR u.user_email LIKE '%wp2shell%'
+         OR u.user_email LIKE '%shellcode%'
+         OR u.user_email LIKE '%wordpress-svc%'
+         OR u.user_email LIKE '%wordpress-noreply%'
+         OR u.user_email LIKE '%@x.lol' );"
+  # NOTE: attacker admins appear under several variants (wpsvc_/wp2_/w2s_ usernames;
+  # @wp2shell.*, @shellcode.*, @wordpress-svc.internal, @wordpress-noreply.net, @x.lol emails).
+  # Deliberately NOT matching @system.local / *.internal broadly — @system.local is a common
+  # LEGIT placeholder admin-email pattern on managed hosts; matching it would delete real admins.
 }
 
 # ---- detection: webshells (filesystem, no DB) ------------------------------
@@ -122,12 +130,16 @@ find_webshells(){ # $1=wproot -> one path per line
   # (a) plugin folders named like a real plugin but ending in -<6 hex>
   find "$wc/plugins" -maxdepth 1 -type d -regextype posix-extended -regex '.*-[0-9a-f]{6}$' 2>/dev/null \
     | while read -r d; do find "$d" -maxdepth 1 -name '*.php' 2>/dev/null; done
-  # (b) any small PHP under wp-content taking a command via $_GET and a token/exec sink
-  find "$wc" -type f -name '*.php' -size -8k 2>/dev/null | while read -r f; do
-    if grep -qE "\\\$_(GET|POST|REQUEST)\[['\"]c['\"]\]" "$f" 2>/dev/null \
-       && grep -qE "hash_equals\(|(system|shell_exec|passthru|proc_open|popen|exec|eval|assert)\s*\(" "$f" 2>/dev/null; then
-      echo "$f"
-    fi
+  # (b) small PHP taking a command via $_GET + a token/exec sink. Scoped to the dirs a
+  #     webshell actually lands in (plugins/mu-plugins/uploads) so it stays fast on sites
+  #     with a large wp-content (grepping ALL of wp-content can take minutes).
+  for sub in plugins mu-plugins uploads; do
+    [ -d "$wc/$sub" ] || continue
+    find "$wc/$sub" -type f -name '*.php' -size -8k 2>/dev/null | while read -r f; do
+      grep -qE "\\\$_(GET|POST|REQUEST)\[['\"]c['\"]\]" "$f" 2>/dev/null \
+        && grep -qE "hash_equals\(|(system|shell_exec|passthru|proc_open|popen|exec|eval|assert)\s*\(" "$f" 2>/dev/null \
+        && echo "$f"
+    done
   done
 }
 

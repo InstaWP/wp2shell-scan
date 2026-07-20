@@ -12,7 +12,7 @@ This tool finds and removes that persistence. It's a single, dependency‑light 
 
 Post‑exploitation, wp2shell tooling typically leaves two persistence artifacts, both of which this tool finds:
 
-1. **A rogue administrator** — `user_login = wpsvc_<hex>`, email `@wordpress-svc.internal` / `@wordpress-noreply.net` (or any `*.internal`), with the `administrator` role, created during the attack window on an established site.
+1. **A rogue administrator** — several variants seen: `user_login` = `wpsvc_<hex>` / `wp2_<hex>` / `w2s_<hex>`, or an email on an attacker domain (`@wp2shell.*`, `@shellcode.*`, `@wordpress-svc.internal`, `@wordpress-noreply.net`, `@x.lol`), with the `administrator` role. (Note: `@system.local` is a *legit* placeholder admin email on some managed hosts — it is deliberately **not** treated as an IOC.)
 2. **A webshell disguised as a plugin** — `wp-content/plugins/<plausible-name>-<6hex>/<same>.php`: a tiny (~1.3 KB) PHP file with a fake `Author: WordPress.org Community` header, gated behind a token, exposing a `?c=<command>` interface.
 
 It also detects the generic case: any small PHP file under `wp-content/` that pipes `$_GET['c']` into a command/eval sink.
