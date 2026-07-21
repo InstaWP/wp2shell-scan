@@ -25,12 +25,12 @@
 # License: MIT.  Use at your own risk; SNAPSHOT the site before --clean.
 # =============================================================================
 set -uo pipefail
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 MODE="scan"; FORMAT="text"; ASSUME_YES=0; ROTATE_SALTS=1
 SINCE="2026-07-16 00:00:00"
 QUAR="${WP2SHELL_QUARANTINE:-./wp2shell-quarantine-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo run)}"
-declare -a BASES=() ROOTS=()
+declare -a BASES=() ROOTS=() SQLFILES=()
 
 c_red=$'\033[31m'; c_yel=$'\033[33m'; c_grn=$'\033[32m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 [ -t 1 ] || { c_red=; c_yel=; c_grn=; c_dim=; c_off=; }
@@ -51,6 +51,11 @@ Actions:
   --no-rotate    With --clean: do NOT rotate wp-config salts.
   --yes          Non-interactive; proceed with --clean without prompting.
 
+Backups/snapshots:
+  --sql FILE     Scan a database dump (.sql or .sql.gz) for the attacker's admin accounts,
+                 WITHOUT restoring it. Use this to vet a backup/snapshot/template BEFORE you
+                 restore — a backup taken while compromised will re-infect the site. Repeatable.
+
 Output:
   --json         Machine-readable JSON to stdout.
   --since 'Y-M-D H:M:S'   Admin-registration window start (default $SINCE).
@@ -69,6 +74,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --json) FORMAT="json"; shift;;
   --since) SINCE="$2"; shift 2;;
   --quarantine) QUAR="$2"; shift 2;;
+  --sql) SQLFILES+=("$2"); shift 2;;
   -h|--help) usage; exit 0;;
   *) echo "unknown arg: $1" >&2; usage; exit 2;;
 esac; done
@@ -184,6 +190,21 @@ rotate_salts(){ # $1=wproot
   done
 }
 
+# ---- scan a DB dump / backup / template snapshot ------------------------------
+SQL_SIG="wpsvc_[0-9a-f]+|wp2_[0-9a-f]+|w2s_[0-9a-f]+|[A-Za-z0-9_.-]+@(wordpress-svc|wordpress-noreply|wp2shell|shellcode)[A-Za-z0-9.-]*"
+scan_sql(){ # $1=file -> 0 clean, 1 poisoned
+  local f="$1" hits reader=cat
+  [ -f "$f" ] || { echo "  ${c_yel}[skip]${c_off} $f (not found)"; return 0; }
+  case "$f" in *.gz) reader="gzip -dc";; esac
+  hits=$($reader "$f" 2>/dev/null | grep -oaE "$SQL_SIG" | sort -u)
+  if [ -n "$hits" ]; then
+    echo "${c_red}[POISONED BACKUP]${c_off} $f"
+    printf '      %s\n' $hits
+    return 1
+  fi
+  echo "${c_grn}[clean]${c_off} ${c_dim}$f${c_off}"; return 0
+}
+
 # ---- per-site processing ---------------------------------------------------
 TOTAL=0; CLEAN=0; SUSP=0; COMP=0; CLEANED=0
 JSON_ROWS=()
@@ -221,6 +242,16 @@ process(){ # $1=wproot
 }
 
 # ---- main ------------------------------------------------------------------
+if [ ${#SQLFILES[@]} -gt 0 ]; then
+  log "wp2shell-scan v$VERSION — scanning ${#SQLFILES[@]} database dump(s)"
+  bad=0
+  for f in "${SQLFILES[@]}"; do scan_sql "$f" || bad=$((bad+1)); done
+  echo "----------------------------------------------------------------"
+  echo "dumps scanned=${#SQLFILES[@]}  poisoned=$bad"
+  [ "$bad" -gt 0 ] && { echo "${c_yel}A poisoned backup will RE-INFECT any site you restore it to. Do not restore it; take a fresh backup after cleaning the live site.${c_off}"; exit 1; }
+  exit 0
+fi
+
 mapfile -t SITES < <(discover | awk 'NF' | sort -u)
 [ ${#SITES[@]} -gt 0 ] || { log "No WordPress installs found. Use --path or --base."; exit 2; }
 
@@ -240,6 +271,6 @@ else
   echo "----------------------------------------------------------------"
   echo "scanned=$TOTAL  ${c_grn}clean=$CLEAN${c_off}  ${c_red}compromised=$COMP${c_off}  cleaned=$CLEANED"
   [ "$COMP" -gt 0 ] && [ "$MODE" = scan ] && echo "Re-run with ${c_yel}--clean --yes${c_off} to remediate (snapshot first)."
-  [ "$CLEANED" -gt 0 ] && echo "Quarantined artifacts: $QUAR  |  Next: update WP core to 7.0.2/6.9.5/6.8.6 + reset admin passwords."
+  [ "$CLEANED" -gt 0 ] && { echo "Quarantined artifacts: $QUAR  |  Next: update WP core to 7.0.2/6.9.5/6.8.6 + reset admin passwords."; echo "${c_yel}IMPORTANT: cleaning the live site does NOT clean your BACKUPS, SNAPSHOTS or STAGING TEMPLATES.${c_off}"; echo "A backup taken while compromised still contains the backdoor and will re-infect on restore."; echo "Vet them with:  $0 --sql /path/to/backup.sql   then take a FRESH backup now that the site is clean."; }
 fi
 [ "$COMP" -gt 0 ] && exit 1 || exit 0

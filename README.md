@@ -44,6 +44,9 @@ Requires `bash`, `find`, `grep`, and a `mysql`/`mariadb` client. [WP‑CLI](http
 
 # CLEAN — quarantine + remove backdoors, rotate wp-config salts (logs everyone out)
 ./wp2shell-scan.sh --base /var/www --clean --yes
+
+# Vet a BACKUP / SNAPSHOT / TEMPLATE dump before restoring it (see warning below)
+./wp2shell-scan.sh --sql /path/to/backup.sql
 ```
 
 Removed artifacts are moved to a **quarantine directory** (not deleted outright) so you keep evidence. Exit code is `1` when compromise is found (scan) or cleaned (clean), `0` when clean — handy for cron/CI.
@@ -58,6 +61,19 @@ Removed artifacts are moved to a **quarantine directory** (not deleted outright)
 ----------------------------------------------------------------
 scanned=812  clean=811  compromised=1  cleaned=0
 ```
+
+## ⚠️ Don't forget your backups, snapshots and templates
+
+**Cleaning a live site does NOT clean your backups.** A backup, snapshot, or staging/blueprint template captured *while the site was compromised* still contains the attacker's admin account — restoring it (or provisioning a new site from it) **re-infects instantly**. We learned this the hard way: after cleaning every affected live site, brand-new sites kept appearing with the backdoor because they were being provisioned from a poisoned template snapshot.
+
+Vet a dump **before** you restore it:
+
+```bash
+./wp2shell-scan.sh --sql /path/to/backup.sql
+./wp2shell-scan.sh --sql backup1.sql --sql backup2.sql.gz   # repeatable, .gz supported
+```
+
+Exit code is `1` if any dump is poisoned. If it is: **do not restore it** — clean the live site first, then take a **fresh** backup, and delete/replace any snapshot or template created during your exposure window.
 
 ## After cleaning
 
